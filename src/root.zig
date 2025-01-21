@@ -65,6 +65,7 @@ pub const StanzaParser = struct {
             switch (state) {
                 .start => {
                     switch (c) {
+                        // skip leading newlines
                         '\n' => start_index = self.index + 1, // see comment #1 below
                         '#' => state = .comment,
                         '-' => return self.invalidFieldName(errorInfo),
