@@ -62,12 +62,10 @@ pub const StanzaParser = struct {
                 self.col_no = 0;
             }
 
-            // std.debug.print("{} '{c}' ({})\n", .{ state, c, c });
-
             switch (state) {
                 .start => {
                     switch (c) {
-                        '\n' => start_index = self.index + 1,
+                        '\n' => start_index = self.index + 1, // see comment #1 below
                         '#' => state = .comment,
                         '-' => return self.invalidFieldName(errorInfo),
                         else => state = .field,
@@ -120,19 +118,14 @@ pub const StanzaParser = struct {
                 },
                 .done => {
                     result = self.source[start_index .. self.index - 1];
-                    if (result.?.len > 0) {
-                        break;
-                    }
-                    // empty stanza, continue skipping newlines
-                    std.debug.print("empty stanza\n", .{});
-                    state = .newline;
+                    break;
                 },
             }
         }
 
-        if (self.index > len) self.index = len;
-
         if (result == null) {
+            // #1: avoid potential bounds error
+            if (start_index > self.index) start_index = self.index;
             result = self.source[start_index..self.index];
         }
 
@@ -244,8 +237,30 @@ test "dcf ignore multiple blank lines" {
     try testing.expectError(StanzaParser.Error.Eof, expect_eof);
 }
 
+test "dcf empty input" {
+    const in = "";
+    var parser = StanzaParser.init(in);
+    var errorInfo: StanzaParser.ErrorInfo = undefined;
+    try testing.expectError(StanzaParser.Error.Eof, parser.next(&errorInfo));
+}
+
+test "dcf one space only" {
+    const in = " ";
+    var parser = StanzaParser.init(in);
+    var errorInfo: StanzaParser.ErrorInfo = undefined;
+    const s1 = try parser.next(&errorInfo);
+    try testing.expectEqualStrings(in, s1);
+}
+
+test "dcf one newline only" {
+    const in = "\n";
+    var parser = StanzaParser.init(in);
+    var errorInfo: StanzaParser.ErrorInfo = undefined;
+    try testing.expectError(StanzaParser.Error.Eof, parser.next(&errorInfo));
+}
+
 test "dcf newlines-only input" {
-    const in = "\n\n";
+    const in = "\n\n\n";
     var parser = StanzaParser.init(in);
     var errorInfo: StanzaParser.ErrorInfo = undefined;
     try testing.expectError(StanzaParser.Error.Eof, parser.next(&errorInfo));
