@@ -129,11 +129,10 @@ pub const StanzaParser = struct {
             result = self.source[start_index..self.index];
         }
 
-        if (result.?.len == 0) {
-            return error.Eof;
-        }
-
-        return result.?;
+        if (result) |res| {
+            if (res.len == 0) return error.Eof;
+            return res;
+        } else unreachable;
     }
 
     pub const ErrorInfo = struct {
