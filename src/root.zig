@@ -162,25 +162,212 @@ pub const StanzaParser = struct {
 
 //
 
-fn isWhitespace(c: u8) bool {
-    return switch (c) {
-        ' ', '\t', '\r', '\n' => true,
-        else => false,
+pub const FieldParser = struct {
+    source: []const u8,
+    index: usize,
+    buf: std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+
+    pub const Options = struct {
+        initial_buffer_size: usize = 4096,
     };
+
+    pub const default_options = Options{};
+
+    pub const Field = struct {
+        /// shares lifetime with source
+        name: []const u8,
+        /// only valid until next call to next()
+        value: []const u8,
+    };
+
+    pub const Error = error{
+        Eof,
+        InvalidName,
+        InvalidDefinition,
+    };
+
+    pub fn init(allocator: std.mem.Allocator, source: []const u8, opts: Options) !FieldParser {
+        const buf = try std.ArrayList(u8).initCapacity(allocator, opts.initial_buffer_size);
+        return FieldParser{
+            .source = source,
+            .index = 0,
+            .buf = buf,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.buf.deinit();
+    }
+
+    /// Lifetime of returned field: name shares lifetime with source.
+    /// value is valid only until the next call to next(), and shares
+    /// lifetime with this instance of FieldParser.
+    pub fn next(self: *FieldParser) !Field {
+        const State = enum {
+            start,
+            field,
+            value_start,
+            value_start_newline,
+            value,
+            value_newline,
+            value_continuation,
+            value_continuation_comment,
+            comment,
+            done,
+        };
+
+        var state: State = .start;
+        var field_start: usize = 0;
+        var field_end: usize = 0;
+        self.buf.clearRetainingCapacity();
+
+        while (self.index < self.source.len) : (self.index += 1) {
+            const c = self.source[self.index];
+
+            switch (state) {
+                .start => {
+                    if (isFieldStart(c)) {
+                        field_start = self.index;
+                        state = .field;
+                        continue;
+                    }
+                    switch (c) {
+                        '#' => state = .comment,
+                        '-' => return error.InvalidName,
+                        else => {},
+                    }
+                },
+
+                .field => {
+                    if (isFieldContinue(c)) {
+                        field_end = self.index;
+                    } else if (c == ':') {
+                        state = .value_start;
+                    } else if (c == '\n') {
+                        return error.InvalidDefinition;
+                    } else if (isWhitespace(c)) {
+                        // allow whitespace other than newline after field name and before colon
+                    } else {
+                        return error.InvalidDefinition;
+                    }
+                },
+
+                .value_start => {
+                    if (c == '\n') {
+                        // possible field with empty value
+                        state = .value_start_newline;
+                        continue;
+                    }
+                    if (isWhitespace(c)) continue;
+                    try self.buf.append(c);
+                    state = .value;
+                },
+
+                .value_start_newline => {
+                    if (isWhitespace(c)) {
+                        // a continuation line
+                        state = .value_start;
+                        continue;
+                    }
+                    // the beginning of a new field, so backtrack to previous empty field
+                    self.index -= 1;
+                    state = .done;
+                },
+
+                .value => {
+                    switch (c) {
+                        '\n' => state = .value_newline,
+                        else => try self.buf.append(c),
+                    }
+                },
+
+                .value_newline => {
+                    switch (c) {
+                        '\n' => state = .done,
+                        ' ', '\t' => state = .value_continuation,
+                        '#' => state = .value_continuation_comment,
+                        else => {
+                            self.index -= 1; // backtrack
+                            state = .done;
+                        },
+                    }
+                },
+
+                .value_continuation => {
+                    switch (c) {
+                        ' ', '\t' => {},
+                        else => {
+                            // TODO: does spec require a space to be inserted? It seems logical to do so.
+                            try self.buf.append(' ');
+                            try self.buf.append(c);
+                            state = .value;
+                        },
+                    }
+                },
+
+                .value_continuation_comment => {
+                    switch (c) {
+                        '\n' => state = .value_newline,
+                        else => {},
+                    }
+                },
+
+                .comment => {
+                    switch (c) {
+                        '\n' => state = .start,
+                        else => {},
+                    }
+                },
+
+                .done => {
+                    return Field{
+                        .name = self.source[field_start .. field_end + 1],
+                        .value = self.buf.items,
+                    };
+                },
+            }
+        }
+
+        // Handle end of source
+        switch (state) {
+            .value, .value_start, .value_start_newline, .value_newline, .value_continuation, .value_continuation_comment, .done => {
+                return Field{
+                    .name = self.source[field_start .. field_end + 1],
+                    .value = self.buf.items,
+                };
+            },
+            .field => return error.InvalidDefinition,
+            .start, .comment => {},
+        }
+        return error.Eof;
+    }
+
+    // Reset parser state and initialize with new source
+    pub fn reset(self: *FieldParser, new_source: []const u8) void {
+        self.source = new_source;
+        self.index = 0;
+        self.buf.clearRetainingCapacity();
+    }
+
+    fn isValidNameChar(c: u8) bool {
+        return std.ascii.isAlphanumeric(c) or c == '_' or c == '-';
+    }
+
+    const Self = @This();
+};
+
+fn isFieldStart(c: u8) bool {
+    return std.ascii.isAlphabetic(c);
 }
 
 fn isFieldContinue(c: u8) bool {
-    // Field names composed of U+0021 (!) through U+0039 (9), and U+003B
-    // (;) through U+007E (~), inclusive.
-    if (c >= '!' and c <= '9') return true;
-    if (c >= ';' and c <= '~') return true;
-    return false;
+    return std.ascii.isAlphanumeric(c) or c == '_' or c == '-';
 }
 
-fn isFieldStart(c: u8) bool {
-    // Field names must not start with U+0023 (#) and U+002D (-)
-    if (c == '#' or c == '-') return false;
-    return isFieldContinue(c);
+fn isWhitespace(c: u8) bool {
+    return c == ' ' or c == '\t';
 }
 
 //
@@ -320,4 +507,32 @@ test "dcf stanza comment - in continuation" {
     var errorInfo = StanzaParser.ErrorInfo.empty;
     const s1 = try parser.next(&errorInfo);
     try testing.expectEqualStrings(in1, s1);
+}
+
+//
+
+test "dcf field basic" {
+    const input =
+        \\Stanza: one
+        \\Field1: value1
+    ;
+
+    const allocator = testing.allocator;
+
+    var parser = try FieldParser.init(allocator, input, .{});
+    defer parser.deinit();
+
+    // First field
+    const f1 = try parser.next();
+    try testing.expectEqualStrings("Stanza", f1.name);
+    try testing.expectEqualStrings("one", f1.value);
+
+    // Second field
+    const f2 = try parser.next();
+    try testing.expectEqualStrings("Field1", f2.name);
+    try testing.expectEqualStrings("value1", f2.value);
+
+    // Should be end of input
+    const f3 = parser.next();
+    try testing.expectError(FieldParser.Error.Eof, f3);
 }
