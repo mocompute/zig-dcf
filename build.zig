@@ -38,7 +38,7 @@ pub fn build(b: *std.Build) void {
 
     // docs
 
-    const docs_step = b.step("docs", "Emit docs");
+    const docs_step = b.step("docs", "Emit docs: python -m http.server 8000 -d zig-out/docs");
 
     const docs_install = b.addInstallDirectory(.{
         .install_dir = .prefix,
