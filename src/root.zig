@@ -11,8 +11,47 @@
 //!
 //! - lines starting with # indicates a comment until end of line
 //!
-//! https://www.debian.org/doc/debian-policy/ch-controlfields.html
+//! - whitespace before or after ':' separating a field name and value
+//!   is ignored
+//!
+//! See:
+//!   https://www.debian.org/doc/debian-policy/ch-controlfields.html
+//!
+//! Formal grammar supported by this parser:
+//!
+//!    (* Top level structure *)
+//!    Document = Stanza*
+//!
+//!    (* Stanza structure *)
+//!    Stanza = (EmptyLine | Comment)* Field+ BlankLine
+//!    BlankLine = NewLine NewLine
+//!    EmptyLine = NewLine
+//!    NewLine = "\n"
+//!
+//!    (* Comments *)
+//!    Comment = "#" AnyChar* NewLine
+//!
+//!    (* Fields *)
+//!    Field = FieldName ":" ValuePart
+//!    FieldName = FieldStartChar FieldChar*
+//!    FieldStartChar = [!-9] | [;~]  (* ASCII 0x21-0x39, 0x3B-0x7E, excluding "#" and "-" *)
+//!    FieldChar = [!-9] | [;~]       (* ASCII 0x21-0x39, 0x3B-0x7E *)
+//!
+//!    (* Values *)
+//!    ValuePart = (SimpleValue | MultilineValue)
+//!    SimpleValue = WhiteSpace* Value? NewLine
+//!    MultilineValue = WhiteSpace* Value? NewLine (ValueContinuation | CommentContinuation)*
+//!    ValueContinuation = WhiteSpace+ Value NewLine
+//!    CommentContinuation = "#" AnyChar* NewLine ValueContinuation
+//!
+//!    (* Basic elements *)
+//!    Value = NonNewline+
+//!    WhiteSpace = " " | "\t"
+//!    NonNewline = <any character except newline>
+//!    AnyChar = <any character>
+//!
 
+/// Parse complete stanzas, with minimal syntax checking.
 pub const StanzaParser = struct {
     source: []const u8,
 
