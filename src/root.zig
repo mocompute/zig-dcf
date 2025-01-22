@@ -18,7 +18,7 @@
 //!   https://www.debian.org/doc/debian-policy/ch-controlfields.html
 //!
 //! Formal grammar supported by this parser:
-//!
+//!    ```
 //!    (* Top level structure *)
 //!    Document = Stanza*
 //!
@@ -49,9 +49,11 @@
 //!    WhiteSpace = " " | "\t"
 //!    NonNewline = <any character except newline>
 //!    AnyChar = <any character>
+//!    ```
 //!
 
-/// Parse complete stanzas, with minimal syntax checking.
+/// Parse complete stanzas, with minimal syntax checking. See also
+/// `FieldParser`.
 pub const StanzaParser = struct {
     source: []const u8,
 
@@ -175,6 +177,7 @@ pub const StanzaParser = struct {
         } else unreachable;
     }
 
+    /// Extended `StanzaParser` error information if `next` returns an error.
     pub const ErrorInfo = struct {
         /// Slice into SOURCE provided to init.
         offender: []const u8,
@@ -183,7 +186,7 @@ pub const StanzaParser = struct {
         col: usize,
 
         /// An undefined ErrorInfo struct, suitable to provide to a
-        /// call to `next()`.
+        /// call to `next`.
         pub const empty: @This() = undefined;
     };
 
@@ -204,9 +207,9 @@ pub const StanzaParser = struct {
 // -- FieldParser --------------------------------------------------
 
 /// Parse one field/value pair at a time. Pre-allocates temporary
-/// buffer at initialisation, and potentially allocates at each call to
-/// next() if parsed values exceed pre-allocated size. Does not release
-/// buffer until field_parser goes out of scope.
+/// buffer at initialisation, and potentially allocates at each call
+/// to `next` if parsed values exceed pre-allocated size. Does not
+/// release buffer until `FieldParser` goes out of scope.
 pub const FieldParser = struct {
     source: []const u8,
     allocator: std.mem.Allocator,
@@ -217,10 +220,12 @@ pub const FieldParser = struct {
     line_no: usize,
     col_no: usize,
 
+    /// Optional configuration to supply to `init`.
     pub const Options = struct {
         initial_buffer_size: usize = 4096,
     };
 
+    /// Field information returned by `next`.
     pub const Field = struct {
         /// shares lifetime with source
         name: []const u8,
@@ -228,6 +233,7 @@ pub const FieldParser = struct {
         value: []const u8,
     };
 
+    /// Extended `FieldParser` error information if `next` returns an error.
     pub const ErrorInfo = struct {
         /// Slice into SOURCE provided to init.
         offender: []const u8,
@@ -246,7 +252,7 @@ pub const FieldParser = struct {
         InvalidDefinition,
     };
 
-    /// Create a FieldParser.
+    /// Create a `FieldParser`.
     pub fn init(allocator: std.mem.Allocator, source: []const u8, opts: Options) !FieldParser {
         const buf = try std.ArrayList(u8).initCapacity(allocator, opts.initial_buffer_size);
         return FieldParser{
@@ -264,8 +270,8 @@ pub const FieldParser = struct {
     }
 
     /// Lifetime of returned field: name shares lifetime with source.
-    /// value is valid only until the next call to next(), and shares
-    /// lifetime with this instance of FieldParser.
+    /// value is valid only until the next call to `next`, and shares
+    /// lifetime with this instance of `FieldParser`.
     pub fn next(self: *Self, errorInfo: *ErrorInfo) !Field {
         const State = enum {
             start,

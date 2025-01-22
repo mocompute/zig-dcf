@@ -118,6 +118,20 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_exe_unit_tests.step);
 
+    // check
+
     const check = b.step("check", "Check if lib compiles");
     check.dependOn(&lib_check.step);
+
+    // docs
+
+    const docs_step = b.step("docs", "Emit docs");
+
+    const docs_install = b.addInstallDirectory(.{
+        .install_dir = .prefix,
+        .install_subdir = "docs",
+        .source_dir = lib.getEmittedDocs(),
+    });
+
+    docs_step.dependOn(&docs_install.step);
 }
