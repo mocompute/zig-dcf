@@ -160,8 +160,12 @@ pub const StanzaParser = struct {
     }
 };
 
-//
+// -- FieldParser --------------------------------------------------
 
+/// Parse one field/value pair at a time. Pre-allocates temporary
+/// buffer at initialisation, and potentially allocates at each call to
+/// next() if parsed values exceed pre-allocated size. Does not release
+/// buffer until field_parser goes out of scope.
 pub const FieldParser = struct {
     source: []const u8,
     index: usize,
@@ -171,8 +175,6 @@ pub const FieldParser = struct {
     pub const Options = struct {
         initial_buffer_size: usize = 4096,
     };
-
-    pub const default_options = Options{};
 
     pub const Field = struct {
         /// shares lifetime with source
@@ -187,6 +189,7 @@ pub const FieldParser = struct {
         InvalidDefinition,
     };
 
+    /// Create a FieldParser.
     pub fn init(allocator: std.mem.Allocator, source: []const u8, opts: Options) !FieldParser {
         const buf = try std.ArrayList(u8).initCapacity(allocator, opts.initial_buffer_size);
         return FieldParser{
@@ -204,7 +207,7 @@ pub const FieldParser = struct {
     /// Lifetime of returned field: name shares lifetime with source.
     /// value is valid only until the next call to next(), and shares
     /// lifetime with this instance of FieldParser.
-    pub fn next(self: *FieldParser) !Field {
+    pub fn next(self: *Self) !Field {
         const State = enum {
             start,
             field,
@@ -344,30 +347,40 @@ pub const FieldParser = struct {
         return error.Eof;
     }
 
-    // Reset parser state and initialize with new source
-    pub fn reset(self: *FieldParser, new_source: []const u8) void {
+    /// Reset parser state and initialize with new source. Use this
+    /// interface to avoid creating a new FieldParser when parsing a
+    /// large number of stanzas.
+    pub fn reset(self: *Self, new_source: []const u8) void {
         self.source = new_source;
         self.index = 0;
         self.buf.clearRetainingCapacity();
-    }
-
-    fn isValidNameChar(c: u8) bool {
-        return std.ascii.isAlphanumeric(c) or c == '_' or c == '-';
     }
 
     const Self = @This();
 };
 
 fn isFieldStart(c: u8) bool {
-    return std.ascii.isAlphabetic(c);
+    // - field names must not start with U+0023 (#) and U+002D (-).
+    if (c == '#' or c == '-')
+        return false;
+    return isFieldContinue(c);
 }
 
 fn isFieldContinue(c: u8) bool {
-    return std.ascii.isAlphanumeric(c) or c == '_' or c == '-';
+    // - field names composed of U+0021 (!) through U+0039 (9), and U+003B
+    //   (;) through U+007E (~), inclusive.
+    if (c >= '!' and c <= '9')
+        return true;
+    if (c >= ';' and c <= '~')
+        return true;
+    return false;
 }
 
 fn isWhitespace(c: u8) bool {
-    return c == ' ' or c == '\t';
+    return switch (c) {
+        ' ', '\t', '\r', '\n' => true,
+        else => false,
+    };
 }
 
 //
@@ -535,4 +548,287 @@ test "dcf field basic" {
     // Should be end of input
     const f3 = parser.next();
     try testing.expectError(FieldParser.Error.Eof, f3);
+}
+
+test "dcf field continuation - simple continue" {
+    const input =
+        \\Field: line 1
+        \\       line 2
+    ;
+    const allocator = testing.allocator;
+    var parser = try FieldParser.init(allocator, input, .{});
+    defer parser.deinit();
+
+    const f1 = try parser.next();
+    try testing.expectEqualStrings("Field", f1.name);
+    try testing.expectEqualStrings("line 1 line 2", f1.value);
+}
+
+test "dcf field continuation - with comment ignored" {
+    const input =
+        \\Field: line 1
+        \\  line 2
+        \\# comment
+        \\  line 3
+    ;
+    const allocator = testing.allocator;
+    var parser = try FieldParser.init(allocator, input, .{});
+    defer parser.deinit();
+
+    const f1 = try parser.next();
+    try testing.expectEqualStrings("Field", f1.name);
+    try testing.expectEqualStrings("line 1 line 2 line 3", f1.value);
+}
+
+test "dcf field continuation - indented comment is part of value" {
+    const input =
+        \\Field: line 1
+        \\  line 2
+        \\  # comment
+        \\  line 3
+    ;
+    const allocator = testing.allocator;
+    var parser = try FieldParser.init(allocator, input, .{});
+    defer parser.deinit();
+
+    const f1 = try parser.next();
+    try testing.expectEqualStrings("Field", f1.name);
+    try testing.expectEqualStrings("line 1 line 2 # comment line 3", f1.value);
+}
+
+test "dcf field continuation - unindented line after comment is not part of value" {
+    const input =
+        \\Field: line 1
+        \\  line 2
+        \\# comment
+        \\line 3
+    ;
+    const allocator = testing.allocator;
+    var parser = try FieldParser.init(allocator, input, .{});
+    defer parser.deinit();
+
+    const f1 = try parser.next();
+    try testing.expectEqualStrings("Field", f1.name);
+    try testing.expectEqualStrings("line 1 line 2", f1.value);
+}
+
+test "dcf field continuation - unindented line after comment begins next field" {
+    const input =
+        \\Field: line 1
+        \\  line 2
+        \\# comment
+        \\Field2: value2
+    ;
+    const allocator = testing.allocator;
+    var parser = try FieldParser.init(allocator, input, .{});
+    defer parser.deinit();
+
+    const f1 = try parser.next();
+    try testing.expectEqualStrings("Field", f1.name);
+    try testing.expectEqualStrings("line 1 line 2", f1.value);
+
+    const f2 = try parser.next();
+    try testing.expectEqualStrings("Field2", f2.name);
+    try testing.expectEqualStrings("value2", f2.value);
+}
+
+test "dcf field continuation - unindented line after continuation begins next field" {
+    const input =
+        \\Field: line 1
+        \\  line 2
+        \\     line 3
+        \\Field2: value2
+    ;
+    const allocator = testing.allocator;
+    var parser = try FieldParser.init(allocator, input, .{});
+    defer parser.deinit();
+
+    const f1 = try parser.next();
+    try testing.expectEqualStrings("Field", f1.name);
+    try testing.expectEqualStrings("line 1 line 2 line 3", f1.value);
+
+    const f2 = try parser.next();
+    try testing.expectEqualStrings("Field2", f2.name);
+    try testing.expectEqualStrings("value2", f2.value);
+}
+
+test "dcf field invalid - bad name" {
+    const input = "-BadName: foo";
+    const allocator = testing.allocator;
+    var parser = try FieldParser.init(allocator, input, .{});
+    defer parser.deinit();
+
+    try testing.expectError(error.InvalidName, parser.next());
+}
+
+test "dcf field invalid - field without value at eof" {
+    const input = "Empty foo";
+    const allocator = testing.allocator;
+    var parser = try FieldParser.init(allocator, input, .{});
+    defer parser.deinit();
+
+    try testing.expectError(error.InvalidDefinition, parser.next());
+}
+
+test "dcf field invalid - field without value in the middle" {
+    const input =
+        \\Field1: value1
+        \\Empty foo
+        \\Field3: value3
+    ;
+    const allocator = testing.allocator;
+    var parser = try FieldParser.init(allocator, input, .{});
+    defer parser.deinit();
+
+    const f1 = try parser.next();
+    try testing.expectEqualStrings("Field1", f1.name);
+    try testing.expectEqualStrings("value1", f1.value);
+
+    try testing.expectError(error.InvalidDefinition, parser.next());
+
+    const f3 = try parser.next();
+    try testing.expectEqualStrings("Field3", f3.name);
+    try testing.expectEqualStrings("value3", f3.value);
+}
+
+test "dcf field whitespace - before colon" {
+    const input = "Field    :value1";
+    const allocator = testing.allocator;
+    var parser = try FieldParser.init(allocator, input, .{});
+    defer parser.deinit();
+
+    const f1 = try parser.next();
+    try testing.expectEqualStrings("Field", f1.name);
+    try testing.expectEqualStrings("value1", f1.value);
+}
+
+test "dcf field whitespace - after colon" {
+    const input = "Field    :         value1";
+    const allocator = testing.allocator;
+    var parser = try FieldParser.init(allocator, input, .{});
+    defer parser.deinit();
+
+    const f1 = try parser.next();
+    try testing.expectEqualStrings("Field", f1.name);
+    try testing.expectEqualStrings("value1", f1.value);
+}
+
+test "dcf field whitespace - before and after first name" {
+    const input =
+        \\
+        \\
+        \\Field: value1
+        \\
+        \\
+    ;
+    const allocator = testing.allocator;
+    var parser = try FieldParser.init(allocator, input, .{});
+    defer parser.deinit();
+
+    const f1 = try parser.next();
+    try testing.expectEqualStrings("Field", f1.name);
+    try testing.expectEqualStrings("value1", f1.value);
+}
+
+test "dcf stanza fields - base" {
+    const input =
+        \\Stanza: one
+        \\Field1: value 1
+        \\Field2: value 2
+        \\
+        \\Stanza: two
+        \\Field1: value 3
+        \\Field2: value 4
+    ;
+    const allocator = testing.allocator;
+    var parser = try FieldParser.init(allocator, input, .{});
+    defer parser.deinit();
+
+    const f1 = try parser.next();
+    try testing.expectEqualStrings("Stanza", f1.name);
+    try testing.expectEqualStrings("one", f1.value);
+
+    const f2 = try parser.next();
+    try testing.expectEqualStrings("Field1", f2.name);
+    try testing.expectEqualStrings("value 1", f2.value);
+
+    const f3 = try parser.next();
+    try testing.expectEqualStrings("Field2", f3.name);
+    try testing.expectEqualStrings("value 2", f3.value);
+
+    const f4 = try parser.next();
+    try testing.expectEqualStrings("Stanza", f4.name);
+    try testing.expectEqualStrings("two", f4.value);
+
+    const f5 = try parser.next();
+    try testing.expectEqualStrings("Field1", f5.name);
+    try testing.expectEqualStrings("value 3", f5.value);
+
+    const f6 = try parser.next();
+    try testing.expectEqualStrings("Field2", f6.name);
+    try testing.expectEqualStrings("value 4", f6.value);
+
+    try testing.expectError(error.Eof, parser.next());
+}
+
+test "dcf field with no value" {
+    const input =
+        \\Package: foo
+        \\Suggests:
+        \\Imports: bar
+    ;
+    const allocator = testing.allocator;
+    var parser = try FieldParser.init(allocator, input, .{});
+    defer parser.deinit();
+
+    const f1 = try parser.next();
+    try testing.expectEqualStrings("Package", f1.name);
+    try testing.expectEqualStrings("foo", f1.value);
+
+    const f2 = try parser.next();
+    try testing.expectEqualStrings("Suggests", f2.name);
+    try testing.expectEqualStrings("", f2.value);
+
+    const f3 = try parser.next();
+    try testing.expectEqualStrings("Imports", f3.name);
+    try testing.expectEqualStrings("bar", f3.value);
+}
+
+test "dcf regression - field with newline value" {
+    const input =
+        \\Authors@R:
+        \\  person(given = "Tabea",
+        \\           family = "Rebafka",
+        \\           role = c("aut", "cre"),
+        \\           email = "tabea.rebafka@sorbonne-universite.fr")
+        \\Package: graphclust
+        \\Type: Package
+        \\Title: Hierarchical Graph Clustering for a Collection of Networks
+        \\Version: 1.3
+        \\Author: Tabea Rebafka [aut, cre]
+        \\Maintainer: Tabea Rebafka <tabea.rebafka@sorbonne-universite.fr>
+        \\Description: Graph clustering using an agglomerative algorithm to maximize the
+        \\  integrated classification likelihood criterion and a mixture of stochastic
+        \\  block models. The method is described in the article "Model-based clustering
+        \\  of multiple networks with a hierarchical algorithm" by
+        \\  T. Rebafka (2022) <arXiv:2211.02314>.
+        \\License: GPL-2
+        \\Encoding: UTF-8
+        \\Imports: blockmodels, igraph, parallel, sClust
+        \\RoxygenNote: 7.2.3
+        \\NeedsCompilation: no
+        \\Packaged: 2023-06-07 15:54:24 UTC; tabea
+        \\Repository: CRAN
+        \\Date/Publication: 2023-06-07 16:50:02 UTC
+    ;
+    const allocator = testing.allocator;
+    var parser = try FieldParser.init(allocator, input, .{});
+    defer parser.deinit();
+
+    const f1 = try parser.next();
+    try testing.expectEqualStrings("Authors@R", f1.name);
+
+    const f2 = try parser.next();
+    try testing.expectEqualStrings("Package", f2.name);
+    try testing.expectEqualStrings("graphclust", f2.value);
 }
