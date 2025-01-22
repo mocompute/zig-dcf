@@ -142,6 +142,10 @@ pub const StanzaParser = struct {
 
         line: usize,
         col: usize,
+
+        /// An undefined ErrorInfo struct, suitable to provide to a
+        /// call to `next()`.
+        pub const empty: @This() = undefined;
     };
 
     pub const Error = error{ Eof, InvalidFieldName };
@@ -226,7 +230,7 @@ test "dcf ignore multiple blank lines" {
     ;
 
     var parser = StanzaParser.init(in);
-    var errorInfo: StanzaParser.ErrorInfo = undefined;
+    var errorInfo = StanzaParser.ErrorInfo.empty;
     const s1 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Stanza:one\n", s1);
 
@@ -240,14 +244,14 @@ test "dcf ignore multiple blank lines" {
 test "dcf empty input" {
     const in = "";
     var parser = StanzaParser.init(in);
-    var errorInfo: StanzaParser.ErrorInfo = undefined;
+    var errorInfo = StanzaParser.ErrorInfo.empty;
     try testing.expectError(StanzaParser.Error.Eof, parser.next(&errorInfo));
 }
 
 test "dcf one space only" {
     const in = " ";
     var parser = StanzaParser.init(in);
-    var errorInfo: StanzaParser.ErrorInfo = undefined;
+    var errorInfo = StanzaParser.ErrorInfo.empty;
     const s1 = try parser.next(&errorInfo);
     try testing.expectEqualStrings(in, s1);
 }
@@ -255,14 +259,14 @@ test "dcf one space only" {
 test "dcf one newline only" {
     const in = "\n";
     var parser = StanzaParser.init(in);
-    var errorInfo: StanzaParser.ErrorInfo = undefined;
+    var errorInfo = StanzaParser.ErrorInfo.empty;
     try testing.expectError(StanzaParser.Error.Eof, parser.next(&errorInfo));
 }
 
 test "dcf newlines-only input" {
     const in = "\n\n\n";
     var parser = StanzaParser.init(in);
-    var errorInfo: StanzaParser.ErrorInfo = undefined;
+    var errorInfo = StanzaParser.ErrorInfo.empty;
     try testing.expectError(StanzaParser.Error.Eof, parser.next(&errorInfo));
 }
 
@@ -272,7 +276,7 @@ test "dcf stanza invalid field - dash start" {
         \\
     ;
     var parser = StanzaParser.init(in);
-    var errorInfo: StanzaParser.ErrorInfo = undefined;
+    var errorInfo = StanzaParser.ErrorInfo.empty;
     const s1 = parser.next(&errorInfo);
     try testing.expectError(StanzaParser.Error.InvalidFieldName, s1);
     try testing.expectEqualStrings("-", errorInfo.offender);
@@ -283,7 +287,7 @@ test "dcf stanza invalid field - dash start" {
 test "dcf stanza invalid field - dash in the middle is ok" {
     const in = "S-tanza: one";
     var parser = StanzaParser.init(in);
-    var errorInfo: StanzaParser.ErrorInfo = undefined;
+    var errorInfo = StanzaParser.ErrorInfo.empty;
     const s1 = try parser.next(&errorInfo);
     try testing.expectEqualStrings(in, s1);
 }
@@ -296,7 +300,7 @@ test "dcf stanza comment - between fields" {
         \\
     ;
     var parser = StanzaParser.init(in);
-    var errorInfo: StanzaParser.ErrorInfo = undefined;
+    var errorInfo = StanzaParser.ErrorInfo.empty;
     const s1 = try parser.next(&errorInfo);
     try testing.expectEqualStrings(in, s1);
 }
@@ -313,7 +317,7 @@ test "dcf stanza comment - in continuation" {
     const in = in1 ++ "\n" ++ in2;
 
     var parser = StanzaParser.init(in);
-    var errorInfo: StanzaParser.ErrorInfo = undefined;
+    var errorInfo = StanzaParser.ErrorInfo.empty;
     const s1 = try parser.next(&errorInfo);
     try testing.expectEqualStrings(in1, s1);
 }
