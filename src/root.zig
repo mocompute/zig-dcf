@@ -74,7 +74,7 @@ pub const StanzaParser = struct {
     /// Return the next stanza as a slice into SOURCE provided to
     /// `init()`. `errorInfo` will be filled in only if this function
     /// returns an error.
-    pub fn next(self: *StanzaParser, errorInfo: *ErrorInfo) Error![]const u8 {
+    pub fn next(self: *Self, errorInfo: *ErrorInfo) Error![]const u8 {
         const State = enum {
             start,
             field,
@@ -189,7 +189,7 @@ pub const StanzaParser = struct {
 
     pub const Error = error{ Eof, InvalidFieldName };
 
-    fn invalidFieldName(self: StanzaParser, errorInfo: *ErrorInfo) Error {
+    fn invalidFieldName(self: Self, errorInfo: *ErrorInfo) Error {
         errorInfo.* = .{
             .offender = self.source[self.index .. self.index + 1],
             .line = self.line_no,
@@ -197,6 +197,8 @@ pub const StanzaParser = struct {
         };
         return error.InvalidFieldName;
     }
+
+    const Self = @This();
 };
 
 // -- FieldParser --------------------------------------------------
@@ -207,9 +209,13 @@ pub const StanzaParser = struct {
 /// buffer until field_parser goes out of scope.
 pub const FieldParser = struct {
     source: []const u8,
-    index: usize,
-    buf: std.ArrayList(u8),
     allocator: std.mem.Allocator,
+
+    // the following are mutated during parsing calls to `next()`
+    buf: std.ArrayList(u8),
+    index: usize,
+    line_no: usize,
+    col_no: usize,
 
     pub const Options = struct {
         initial_buffer_size: usize = 4096,
@@ -220,6 +226,18 @@ pub const FieldParser = struct {
         name: []const u8,
         /// only valid until next call to next()
         value: []const u8,
+    };
+
+    pub const ErrorInfo = struct {
+        /// Slice into SOURCE provided to init.
+        offender: []const u8,
+
+        line: usize,
+        col: usize,
+
+        /// An undefined ErrorInfo struct, suitable to provide to a
+        /// call to `next()`.
+        pub const empty: @This() = undefined;
     };
 
     pub const Error = error{
@@ -234,6 +252,8 @@ pub const FieldParser = struct {
         return FieldParser{
             .source = source,
             .index = 0,
+            .line_no = 1,
+            .col_no = 0,
             .buf = buf,
             .allocator = allocator,
         };
@@ -246,7 +266,7 @@ pub const FieldParser = struct {
     /// Lifetime of returned field: name shares lifetime with source.
     /// value is valid only until the next call to next(), and shares
     /// lifetime with this instance of FieldParser.
-    pub fn next(self: *Self) !Field {
+    pub fn next(self: *Self, errorInfo: *ErrorInfo) !Field {
         const State = enum {
             start,
             field,
@@ -265,8 +285,16 @@ pub const FieldParser = struct {
         var field_end: usize = 0;
         self.buf.clearRetainingCapacity();
 
-        while (self.index < self.source.len) : (self.index += 1) {
+        while (self.index < self.source.len) : ({
+            self.index += 1;
+            self.col_no += 1;
+        }) {
             const c = self.source[self.index];
+
+            if (c == '\n') {
+                self.line_no += 1;
+                self.col_no = 0;
+            }
 
             switch (state) {
                 .start => {
@@ -277,7 +305,7 @@ pub const FieldParser = struct {
                     }
                     switch (c) {
                         '#' => state = .comment,
-                        '-' => return error.InvalidName,
+                        '-' => return self.invalidName(errorInfo),
                         else => {},
                     }
                 },
@@ -288,11 +316,11 @@ pub const FieldParser = struct {
                     } else if (c == ':') {
                         state = .value_start;
                     } else if (c == '\n') {
-                        return error.InvalidDefinition;
+                        return self.invalidDefinition(errorInfo);
                     } else if (isWhitespace(c)) {
                         // allow whitespace other than newline after field name and before colon
                     } else {
-                        return error.InvalidDefinition;
+                        return self.invalidDefinition(errorInfo);
                     }
                 },
 
@@ -380,7 +408,7 @@ pub const FieldParser = struct {
                     .value = self.buf.items,
                 };
             },
-            .field => return error.InvalidDefinition,
+            .field => return self.invalidDefinition(errorInfo),
             .start, .comment => {},
         }
         return error.Eof;
@@ -393,6 +421,36 @@ pub const FieldParser = struct {
         self.source = new_source;
         self.index = 0;
         self.buf.clearRetainingCapacity();
+    }
+
+    fn invalidName(self: Self, errorInfo: *ErrorInfo) Error {
+        const index = self.safeIndex();
+        errorInfo.* = .{
+            .offender = self.source[index .. index + 1],
+            .line = self.line_no,
+            .col = self.col_no,
+        };
+        return error.InvalidName;
+    }
+
+    fn invalidDefinition(self: Self, errorInfo: *ErrorInfo) Error {
+        const index = self.safeIndex();
+        errorInfo.* = .{
+            .offender = self.source[index .. index + 1],
+            .line = self.line_no,
+            .col = self.col_no,
+        };
+        return error.InvalidDefinition;
+    }
+
+    fn safeIndex(self: Self) usize {
+        var index = self.index;
+        if (self.source.len == 0) {
+            index = 0;
+        } else if (index >= self.source.len) {
+            index = self.source.len - 1;
+        }
+        return index;
     }
 
     const Self = @This();
@@ -573,19 +631,20 @@ test "dcf field basic" {
 
     var parser = try FieldParser.init(allocator, input, .{});
     defer parser.deinit();
+    var errorInfo = FieldParser.ErrorInfo.empty;
 
     // First field
-    const f1 = try parser.next();
+    const f1 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Stanza", f1.name);
     try testing.expectEqualStrings("one", f1.value);
 
     // Second field
-    const f2 = try parser.next();
+    const f2 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Field1", f2.name);
     try testing.expectEqualStrings("value1", f2.value);
 
     // Should be end of input
-    const f3 = parser.next();
+    const f3 = parser.next(&errorInfo);
     try testing.expectError(FieldParser.Error.Eof, f3);
 }
 
@@ -597,8 +656,9 @@ test "dcf field continuation - simple continue" {
     const allocator = testing.allocator;
     var parser = try FieldParser.init(allocator, input, .{});
     defer parser.deinit();
+    var errorInfo = FieldParser.ErrorInfo.empty;
 
-    const f1 = try parser.next();
+    const f1 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Field", f1.name);
     try testing.expectEqualStrings("line 1 line 2", f1.value);
 }
@@ -613,8 +673,9 @@ test "dcf field continuation - with comment ignored" {
     const allocator = testing.allocator;
     var parser = try FieldParser.init(allocator, input, .{});
     defer parser.deinit();
+    var errorInfo = FieldParser.ErrorInfo.empty;
 
-    const f1 = try parser.next();
+    const f1 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Field", f1.name);
     try testing.expectEqualStrings("line 1 line 2 line 3", f1.value);
 }
@@ -629,8 +690,9 @@ test "dcf field continuation - indented comment is part of value" {
     const allocator = testing.allocator;
     var parser = try FieldParser.init(allocator, input, .{});
     defer parser.deinit();
+    var errorInfo = FieldParser.ErrorInfo.empty;
 
-    const f1 = try parser.next();
+    const f1 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Field", f1.name);
     try testing.expectEqualStrings("line 1 line 2 # comment line 3", f1.value);
 }
@@ -645,8 +707,9 @@ test "dcf field continuation - unindented line after comment is not part of valu
     const allocator = testing.allocator;
     var parser = try FieldParser.init(allocator, input, .{});
     defer parser.deinit();
+    var errorInfo = FieldParser.ErrorInfo.empty;
 
-    const f1 = try parser.next();
+    const f1 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Field", f1.name);
     try testing.expectEqualStrings("line 1 line 2", f1.value);
 }
@@ -661,12 +724,13 @@ test "dcf field continuation - unindented line after comment begins next field" 
     const allocator = testing.allocator;
     var parser = try FieldParser.init(allocator, input, .{});
     defer parser.deinit();
+    var errorInfo = FieldParser.ErrorInfo.empty;
 
-    const f1 = try parser.next();
+    const f1 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Field", f1.name);
     try testing.expectEqualStrings("line 1 line 2", f1.value);
 
-    const f2 = try parser.next();
+    const f2 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Field2", f2.name);
     try testing.expectEqualStrings("value2", f2.value);
 }
@@ -681,12 +745,13 @@ test "dcf field continuation - unindented line after continuation begins next fi
     const allocator = testing.allocator;
     var parser = try FieldParser.init(allocator, input, .{});
     defer parser.deinit();
+    var errorInfo = FieldParser.ErrorInfo.empty;
 
-    const f1 = try parser.next();
+    const f1 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Field", f1.name);
     try testing.expectEqualStrings("line 1 line 2 line 3", f1.value);
 
-    const f2 = try parser.next();
+    const f2 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Field2", f2.name);
     try testing.expectEqualStrings("value2", f2.value);
 }
@@ -696,8 +761,9 @@ test "dcf field invalid - bad name" {
     const allocator = testing.allocator;
     var parser = try FieldParser.init(allocator, input, .{});
     defer parser.deinit();
+    var errorInfo = FieldParser.ErrorInfo.empty;
 
-    try testing.expectError(error.InvalidName, parser.next());
+    try testing.expectError(error.InvalidName, parser.next(&errorInfo));
 }
 
 test "dcf field invalid - field without value at eof" {
@@ -705,8 +771,9 @@ test "dcf field invalid - field without value at eof" {
     const allocator = testing.allocator;
     var parser = try FieldParser.init(allocator, input, .{});
     defer parser.deinit();
+    var errorInfo = FieldParser.ErrorInfo.empty;
 
-    try testing.expectError(error.InvalidDefinition, parser.next());
+    try testing.expectError(error.InvalidDefinition, parser.next(&errorInfo));
 }
 
 test "dcf field invalid - field without value in the middle" {
@@ -718,14 +785,15 @@ test "dcf field invalid - field without value in the middle" {
     const allocator = testing.allocator;
     var parser = try FieldParser.init(allocator, input, .{});
     defer parser.deinit();
+    var errorInfo = FieldParser.ErrorInfo.empty;
 
-    const f1 = try parser.next();
+    const f1 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Field1", f1.name);
     try testing.expectEqualStrings("value1", f1.value);
 
-    try testing.expectError(error.InvalidDefinition, parser.next());
+    try testing.expectError(error.InvalidDefinition, parser.next(&errorInfo));
 
-    const f3 = try parser.next();
+    const f3 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Field3", f3.name);
     try testing.expectEqualStrings("value3", f3.value);
 }
@@ -735,8 +803,9 @@ test "dcf field whitespace - before colon" {
     const allocator = testing.allocator;
     var parser = try FieldParser.init(allocator, input, .{});
     defer parser.deinit();
+    var errorInfo = FieldParser.ErrorInfo.empty;
 
-    const f1 = try parser.next();
+    const f1 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Field", f1.name);
     try testing.expectEqualStrings("value1", f1.value);
 }
@@ -746,8 +815,9 @@ test "dcf field whitespace - after colon" {
     const allocator = testing.allocator;
     var parser = try FieldParser.init(allocator, input, .{});
     defer parser.deinit();
+    var errorInfo = FieldParser.ErrorInfo.empty;
 
-    const f1 = try parser.next();
+    const f1 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Field", f1.name);
     try testing.expectEqualStrings("value1", f1.value);
 }
@@ -763,8 +833,9 @@ test "dcf field whitespace - before and after first name" {
     const allocator = testing.allocator;
     var parser = try FieldParser.init(allocator, input, .{});
     defer parser.deinit();
+    var errorInfo = FieldParser.ErrorInfo.empty;
 
-    const f1 = try parser.next();
+    const f1 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Field", f1.name);
     try testing.expectEqualStrings("value1", f1.value);
 }
@@ -782,32 +853,33 @@ test "dcf stanza fields - base" {
     const allocator = testing.allocator;
     var parser = try FieldParser.init(allocator, input, .{});
     defer parser.deinit();
+    var errorInfo = FieldParser.ErrorInfo.empty;
 
-    const f1 = try parser.next();
+    const f1 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Stanza", f1.name);
     try testing.expectEqualStrings("one", f1.value);
 
-    const f2 = try parser.next();
+    const f2 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Field1", f2.name);
     try testing.expectEqualStrings("value 1", f2.value);
 
-    const f3 = try parser.next();
+    const f3 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Field2", f3.name);
     try testing.expectEqualStrings("value 2", f3.value);
 
-    const f4 = try parser.next();
+    const f4 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Stanza", f4.name);
     try testing.expectEqualStrings("two", f4.value);
 
-    const f5 = try parser.next();
+    const f5 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Field1", f5.name);
     try testing.expectEqualStrings("value 3", f5.value);
 
-    const f6 = try parser.next();
+    const f6 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Field2", f6.name);
     try testing.expectEqualStrings("value 4", f6.value);
 
-    try testing.expectError(error.Eof, parser.next());
+    try testing.expectError(error.Eof, parser.next(&errorInfo));
 }
 
 test "dcf field with no value" {
@@ -819,16 +891,17 @@ test "dcf field with no value" {
     const allocator = testing.allocator;
     var parser = try FieldParser.init(allocator, input, .{});
     defer parser.deinit();
+    var errorInfo = FieldParser.ErrorInfo.empty;
 
-    const f1 = try parser.next();
+    const f1 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Package", f1.name);
     try testing.expectEqualStrings("foo", f1.value);
 
-    const f2 = try parser.next();
+    const f2 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Suggests", f2.name);
     try testing.expectEqualStrings("", f2.value);
 
-    const f3 = try parser.next();
+    const f3 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Imports", f3.name);
     try testing.expectEqualStrings("bar", f3.value);
 }
@@ -863,11 +936,12 @@ test "dcf regression - field with newline value" {
     const allocator = testing.allocator;
     var parser = try FieldParser.init(allocator, input, .{});
     defer parser.deinit();
+    var errorInfo = FieldParser.ErrorInfo.empty;
 
-    const f1 = try parser.next();
+    const f1 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Authors@R", f1.name);
 
-    const f2 = try parser.next();
+    const f2 = try parser.next(&errorInfo);
     try testing.expectEqualStrings("Package", f2.name);
     try testing.expectEqualStrings("graphclust", f2.value);
 }
