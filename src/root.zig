@@ -1,5 +1,9 @@
 //! Debian control file parser.
 //!
+//! Usage: see test "dcf integration" for example usage.
+//!
+//! Grammar:
+//!
 //! - field names are case-insensitive.
 //!
 //! - field names composed of U+0021 (!) through U+0039 (9), and U+003B
@@ -426,6 +430,8 @@ pub const FieldParser = struct {
     pub fn reset(self: *Self, new_source: []const u8) void {
         self.source = new_source;
         self.index = 0;
+        self.line_no = 0;
+        self.col_no = 0;
         self.buf.clearRetainingCapacity();
     }
 
@@ -914,30 +920,10 @@ test "dcf field with no value" {
 
 test "dcf regression - field with newline value" {
     const input =
-        \\Authors@R:
-        \\  person(given = "Tabea",
-        \\           family = "Rebafka",
-        \\           role = c("aut", "cre"),
-        \\           email = "tabea.rebafka@sorbonne-universite.fr")
-        \\Package: graphclust
-        \\Type: Package
-        \\Title: Hierarchical Graph Clustering for a Collection of Networks
-        \\Version: 1.3
-        \\Author: Tabea Rebafka [aut, cre]
-        \\Maintainer: Tabea Rebafka <tabea.rebafka@sorbonne-universite.fr>
-        \\Description: Graph clustering using an agglomerative algorithm to maximize the
-        \\  integrated classification likelihood criterion and a mixture of stochastic
-        \\  block models. The method is described in the article "Model-based clustering
-        \\  of multiple networks with a hierarchical algorithm" by
-        \\  T. Rebafka (2022) <arXiv:2211.02314>.
-        \\License: GPL-2
-        \\Encoding: UTF-8
-        \\Imports: blockmodels, igraph, parallel, sClust
-        \\RoxygenNote: 7.2.3
-        \\NeedsCompilation: no
-        \\Packaged: 2023-06-07 15:54:24 UTC; tabea
-        \\Repository: CRAN
-        \\Date/Publication: 2023-06-07 16:50:02 UTC
+        \\StartsWithNewline:
+        \\  continue 1
+        \\           continue 2
+        \\Normal: foo
     ;
     const allocator = testing.allocator;
     var parser = try FieldParser.init(allocator, input, .{});
@@ -945,9 +931,62 @@ test "dcf regression - field with newline value" {
     var errorInfo = FieldParser.ErrorInfo.empty;
 
     const f1 = try parser.next(&errorInfo);
-    try testing.expectEqualStrings("Authors@R", f1.name);
+    try testing.expectEqualStrings("StartsWithNewline", f1.name);
+    try testing.expectEqualStrings("continue 1 continue 2", f1.value);
 
     const f2 = try parser.next(&errorInfo);
-    try testing.expectEqualStrings("Package", f2.name);
-    try testing.expectEqualStrings("graphclust", f2.value);
+    try testing.expectEqualStrings("Normal", f2.name);
+    try testing.expectEqualStrings("foo", f2.value);
+}
+
+test "dcf integration" {
+    const in =
+        \\Stanza: one
+        \\Field: field-one
+        \\
+        \\Stanza: two
+        \\Field: field-two
+        \\
+    ;
+
+    const expected: [4]FieldParser.Field = .{
+        .{ .name = "Stanza", .value = "one" },
+        .{ .name = "Field", .value = "field-one" },
+        .{ .name = "Stanza", .value = "two" },
+        .{ .name = "Field", .value = "field-two" },
+    };
+    var exIdx: usize = 0;
+
+    const allocator = testing.allocator;
+
+    var stanzas = StanzaParser.init(in);
+    var stanzaError = StanzaParser.ErrorInfo.empty;
+    var fields = try FieldParser.init(allocator, "", .{});
+    defer fields.deinit();
+    var fieldError = FieldParser.ErrorInfo.empty;
+
+    while (true) {
+        const stanza = stanzas.next(&stanzaError) catch |err| switch (err) {
+            error.Eof => break,
+            else => |e| {
+                std.debug.print("unexpected stanza error: {}", .{e});
+                unreachable;
+            },
+        };
+
+        fields.reset(stanza);
+
+        while (true) {
+            const field = fields.next(&fieldError) catch |err| switch (err) {
+                error.Eof => break,
+                else => |e| {
+                    std.debug.print("unexpected field error: {}", .{e});
+                    unreachable;
+                },
+            };
+            try testing.expectEqualStrings(expected[exIdx].name, field.name);
+            try testing.expectEqualStrings(expected[exIdx].value, field.value);
+            exIdx += 1;
+        }
+    }
 }
