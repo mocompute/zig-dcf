@@ -29,13 +29,13 @@ jobs:
         run: zig env
 
       - name: Build
-        run: zig build
+        run: zig build --summary all
 
       - name: Test
-        run: zig test
+        run: zig build test --summary all
 
       - name: Build docs
-        run: zig build docs
+        run: zig build docs --summary all
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
