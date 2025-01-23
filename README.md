@@ -3,6 +3,18 @@
 A simple pre-allocating parser for Debian Control File
 formatted strings.
 
+## Build
+
+```zig
+zig build
+```
+
+## Documentation
+
+```zig
+zig build docs
+```
+
 ## Usage
 
 ```zig
