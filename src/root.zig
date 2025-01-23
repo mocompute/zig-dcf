@@ -276,8 +276,8 @@ pub const FieldParser = struct {
     /// Lifetime of returned field: name shares lifetime with source.
     /// value is valid only until the next call to `next`, and shares
     /// lifetime with this instance of `FieldParser`. `error_info`
-    /// will only be valid if an error is returned.
-    pub fn next(self: *Self, error_info: *ErrorInfo) !Field {
+    /// will only be valid if a non-allocator `Error` is returned.
+    pub fn next(self: *Self, error_info: *ErrorInfo) (Error || error{OutOfMemory})!Field {
         const State = enum {
             start,
             field,
