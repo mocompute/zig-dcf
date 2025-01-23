@@ -11,9 +11,8 @@ zig build
 
 ## Documentation
 
-```zig
-zig build docs
-```
+https://mocompute.github.io/zig-dcf/
+
 
 ## Usage
 

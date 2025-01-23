@@ -10,6 +10,10 @@ permissions:
   pages: write
   id-token: write
 
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -17,28 +21,20 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v1
         with:
           version: master
 
-
-      - name: Zig environment
-        run: zig env
-
-      - name: Build
-        run: zig build --summary all
-
-      - name: Test
-        run: zig build test --summary all
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Build docs
         run: zig build docs --summary all
 
       - name: Setup Pages
-        uses: actions/configure-pages@v4
+        uses: actions/configure-pages@v5
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
