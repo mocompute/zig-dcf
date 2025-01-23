@@ -1,6 +1,6 @@
 //! Debian control file parser.
 //!
-//! Usage: see test "dcf integration" for example usage.
+//! Usage: see the test "dcf integration" for example usage.
 //!
 //! Grammar:
 //!
@@ -56,8 +56,10 @@
 //!    ```
 //!
 
-/// Parse complete stanzas, with minimal syntax checking. See also
-/// `FieldParser`.
+/// `StanzaParser` splits input string into complete stanzas, with
+/// minimal syntax checking. Use the slice returned from
+/// `StanzaParser.next` with `FieldParser` to iterate through
+/// individual fields.
 pub const StanzaParser = struct {
     source: []const u8,
 
@@ -256,7 +258,12 @@ pub const FieldParser = struct {
         InvalidDefinition,
     };
 
-    /// Create a `FieldParser`. Lifetime of `source` must exceed FieldParser lifetime.
+    /// Create a `FieldParser` and its allocated temporary buffer with
+    /// the given options. Lifetime of `source` must exceed
+    /// FieldParser lifetime. Ideally, the initial temporary buffer
+    /// allocation will be large enough for the lifetime of the
+    /// program. If the buffer needs to be grown during parsing (see
+    /// `next`), the provided allocator will be used.
     pub fn init(allocator: std.mem.Allocator, source: []const u8, opts: Options) !FieldParser {
         const buf = try std.ArrayList(u8).initCapacity(allocator, opts.initial_buffer_size);
         return FieldParser{
@@ -425,9 +432,10 @@ pub const FieldParser = struct {
         return error.Eof;
     }
 
-    /// Reset parser state and initialize with new source. Use this
-    /// interface to avoid creating a new FieldParser when parsing a
-    /// large number of stanzas.
+    /// Reset parser state and initialize with new source string. Use
+    /// this interface to avoid creating a new FieldParser (and its
+    /// heap-allocated temporary buffer) when parsing multiple
+    /// stanzas.
     pub fn reset(self: *Self, new_source: []const u8) void {
         self.source = new_source;
         self.index = 0;
