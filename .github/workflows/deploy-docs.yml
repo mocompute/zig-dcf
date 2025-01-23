@@ -24,6 +24,16 @@ jobs:
         with:
           version: master
 
+
+      - name: Zig environment
+        run: zig env
+
+      - name: Build
+        run: zig build
+
+      - name: Test
+        run: zig test
+
       - name: Build docs
         run: zig build docs
 
