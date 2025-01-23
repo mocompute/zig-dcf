@@ -4,23 +4,23 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // module
+
     const lib_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
 
+    // static library
+
     const lib = b.addStaticLibrary(.{
-        .name = "zig-dcf",
+        .name = "dcf",
         .root_module = lib_mod,
     });
-
-    const lib_check = b.addStaticLibrary(.{
-        .name = "zig-dcf",
-        .root_module = lib_mod,
-    });
-
     b.installArtifact(lib);
+
+    // tests
 
     const lib_unit_tests = b.addTest(.{
         .root_module = lib_mod,
@@ -34,6 +34,10 @@ pub fn build(b: *std.Build) void {
     // check
 
     const check = b.step("check", "Check if lib compiles");
+    const lib_check = b.addStaticLibrary(.{
+        .name = "dcf",
+        .root_module = lib_mod,
+    });
     check.dependOn(&lib_check.step);
 
     // docs
@@ -47,4 +51,7 @@ pub fn build(b: *std.Build) void {
     });
 
     docs_step.dependOn(&docs_install.step);
+
+    // default target also builds docs
+    b.getInstallStep().dependOn(&docs_install.step);
 }
