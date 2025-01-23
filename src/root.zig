@@ -956,18 +956,18 @@ test "dcf integration" {
         .{ .name = "Stanza", .value = "two" },
         .{ .name = "Field", .value = "field-two" },
     };
-    var exIdx: usize = 0;
+    var ex_idx: usize = 0;
 
     const allocator = testing.allocator;
 
     var stanzas = StanzaParser.init(in);
-    var stanzaError = StanzaParser.ErrorInfo.empty;
+    var stanza_error = StanzaParser.ErrorInfo.empty;
     var fields = try FieldParser.init(allocator, "", .{});
     defer fields.deinit();
-    var fieldError = FieldParser.ErrorInfo.empty;
+    var field_error = FieldParser.ErrorInfo.empty;
 
     while (true) {
-        const stanza = stanzas.next(&stanzaError) catch |err| switch (err) {
+        const stanza = stanzas.next(&stanza_error) catch |err| switch (err) {
             error.Eof => break,
             else => |e| {
                 std.debug.print("unexpected stanza error: {}", .{e});
@@ -978,16 +978,16 @@ test "dcf integration" {
         fields.reset(stanza);
 
         while (true) {
-            const field = fields.next(&fieldError) catch |err| switch (err) {
+            const field = fields.next(&field_error) catch |err| switch (err) {
                 error.Eof => break,
                 else => |e| {
                     std.debug.print("unexpected field error: {}", .{e});
                     unreachable;
                 },
             };
-            try testing.expectEqualStrings(expected[exIdx].name, field.name);
-            try testing.expectEqualStrings(expected[exIdx].value, field.value);
-            exIdx += 1;
+            try testing.expectEqualStrings(expected[ex_idx].name, field.name);
+            try testing.expectEqualStrings(expected[ex_idx].value, field.value);
+            ex_idx += 1;
         }
     }
 }
