@@ -60,8 +60,9 @@
 /// minimal syntax checking. Use the slice returned from
 /// `StanzaParser.next` with `FieldParser` to iterate through
 /// individual fields.
-pub const StanzaParser = struct {
-    source: []const u8,
+pub const StanzaParser = extern struct {
+    source: [*]const u8,
+    source_len: usize,
 
     // the following are mutated during parsing calls to `next()`
     index: usize,
@@ -70,13 +71,20 @@ pub const StanzaParser = struct {
 
     /// Initialize a stanza parser. Lifetime of source must exceed all
     /// calls to StanzaParser.next().
-    pub fn init(source: []const u8) StanzaParser {
+    pub fn initPtr(source: [*]const u8, source_len: usize) StanzaParser {
         return .{
             .source = source,
+            .source_len = source_len,
             .index = 0,
             .line_no = 1,
             .col_no = 0,
         };
+    }
+
+    /// Initialize a stanza parser. Lifetime of source must exceed all
+    /// calls to StanzaParser.next().
+    pub fn init(source: []const u8) StanzaParser {
+        return StanzaParser.initPtr(source.ptr, source.len);
     }
 
     /// Return the next stanza as a slice into SOURCE provided to
@@ -97,7 +105,7 @@ pub const StanzaParser = struct {
         var state: State = .start;
         var start_index = self.index;
         var result: ?[]const u8 = null;
-        const len = self.source.len;
+        const len = self.source_len;
 
         while (self.index < len) : ({
             self.index += 1;
@@ -184,9 +192,10 @@ pub const StanzaParser = struct {
     }
 
     /// Extended `StanzaParser` error information if `next` returns an error.
-    pub const ErrorInfo = struct {
+    pub const ErrorInfo = extern struct {
         /// Slice into SOURCE provided to init.
-        offender: []const u8,
+        offender: [*]const u8,
+        offender_len: usize,
 
         line: usize,
         col: usize,
@@ -200,7 +209,8 @@ pub const StanzaParser = struct {
 
     fn invalidFieldName(self: Self, error_info: *ErrorInfo) Error {
         error_info.* = .{
-            .offender = self.source[self.index .. self.index + 1],
+            .offender = @ptrCast(&self.source[self.index]),
+            .offender_len = 1,
             .line = self.line_no,
             .col = self.col_no,
         };
@@ -210,19 +220,50 @@ pub const StanzaParser = struct {
     const Self = @This();
 };
 
+/// C: initialize a StanzaParser. Lifetime of source must exceed
+/// lifetime of the parser.
+pub export fn dcf_stanza_parser_init(source: [*]const u8, source_len: usize) StanzaParser {
+    return StanzaParser.initPtr(source, source_len);
+}
+
+pub const dcf_stanza_parser_error_info = StanzaParser.ErrorInfo;
+
+pub export fn dcf_stanza_parser_next(
+    parser: *StanzaParser,
+    out: *[*]const u8,
+    out_len: *usize,
+    error_info: *StanzaParser.ErrorInfo,
+) c_int {
+    const res = parser.next(error_info) catch |err| {
+        return stanzaParserErrorToCInt(err);
+    };
+    out.* = res.ptr;
+    out_len.* = res.len;
+    return 0;
+}
+
+fn stanzaParserErrorToCInt(err: StanzaParser.Error) c_int {
+    return switch (err) {
+        error.Eof => 1,
+        error.InvalidFieldName => 2,
+    };
+}
+
 // -- FieldParser --------------------------------------------------
 
 /// Parse one field/value pair at a time. Pre-allocates temporary
 /// buffer at initialisation, and potentially allocates at each call
 /// to `next` if parsed values exceed pre-allocated size. Does not
 /// release buffer until `FieldParser` goes out of scope.
-pub const FieldParser = struct {
-    source: []const u8,
-    allocator: std.mem.Allocator,
+pub const FieldParser = extern struct {
+    source: [*]const u8,
+    source_len: usize,
 
     // the following are mutated during parsing calls to `next()`
-    buf: std.ArrayList(u8),
-    index: usize,
+    buf: [*]u8,
+    buf_len: usize,
+    buf_index: usize,
+    source_index: usize,
     line_no: usize,
     col_no: usize,
 
@@ -259,25 +300,30 @@ pub const FieldParser = struct {
     };
 
     /// Create a `FieldParser` and its allocated temporary buffer with
-    /// the given options. Lifetime of `source` must exceed
-    /// FieldParser lifetime. Ideally, the initial temporary buffer
-    /// allocation will be large enough for the lifetime of the
-    /// program. If the buffer needs to be grown during parsing (see
-    /// `next`), the provided allocator will be used.
-    pub fn init(allocator: std.mem.Allocator, source: []const u8, opts: Options) !FieldParser {
-        const buf = try std.ArrayList(u8).initCapacity(allocator, opts.initial_buffer_size);
-        return FieldParser{
-            .source = source,
-            .index = 0,
-            .line_no = 1,
-            .col_no = 0,
-            .buf = buf,
-            .allocator = allocator,
-        };
+    /// the given options. Lifetime of `source` and `buf` must exceed
+    /// FieldParser lifetime. `buf` should be large enough to contain
+    /// the largest possible field value in the input source, or else
+    /// an OutOfMemory error will be returned by `next`.
+    pub fn init(source: []const u8, buf: []u8) FieldParser {
+        return FieldParser.initPtr(source.ptr, source.len, buf.ptr, buf.len);
     }
 
-    pub fn deinit(self: *Self) void {
-        self.buf.deinit();
+    /// Create a `FieldParser` and its allocated temporary buffer with
+    /// the given options. Lifetime of `source` and `buf` must exceed
+    /// FieldParser lifetime. `buf` should be large enough to contain
+    /// the largest possible field value in the input source, or else
+    /// an OutOfMemory error will be returned by `next`.
+    pub fn initPtr(source: [*]const u8, source_len: usize, buf: [*]u8, buf_len: usize) FieldParser {
+        return FieldParser{
+            .source = source,
+            .source_len = source_len,
+            .buf = buf,
+            .buf_len = buf_len,
+            .buf_index = 0,
+            .source_index = 0,
+            .line_no = 1,
+            .col_no = 0,
+        };
     }
 
     /// Lifetime of returned field: name shares lifetime with source.
@@ -301,13 +347,14 @@ pub const FieldParser = struct {
         var state: State = .start;
         var field_start: usize = 0;
         var field_end: usize = 0;
-        self.buf.clearRetainingCapacity();
 
-        while (self.index < self.source.len) : ({
-            self.index += 1;
+        self.buf_index = 0;
+
+        while (self.source_index < self.source_len) : ({
+            self.source_index += 1;
             self.col_no += 1;
         }) {
-            const c = self.source[self.index];
+            const c = self.source[self.source_index];
 
             if (c == '\n') {
                 self.line_no += 1;
@@ -317,7 +364,7 @@ pub const FieldParser = struct {
             switch (state) {
                 .start => {
                     if (isFieldStart(c)) {
-                        field_start = self.index;
+                        field_start = self.source_index;
                         state = .field;
                         continue;
                     }
@@ -330,7 +377,7 @@ pub const FieldParser = struct {
 
                 .field => {
                     if (isFieldContinue(c)) {
-                        field_end = self.index;
+                        field_end = self.source_index;
                     } else if (c == ':') {
                         state = .value_start;
                     } else if (c == '\n') {
@@ -349,7 +396,8 @@ pub const FieldParser = struct {
                         continue;
                     }
                     if (isWhitespace(c)) continue;
-                    try self.buf.append(c);
+
+                    try self.appendBuf(c);
                     state = .value;
                 },
 
@@ -360,14 +408,14 @@ pub const FieldParser = struct {
                         continue;
                     }
                     // the beginning of a new field, so backtrack to previous empty field
-                    self.index -= 1;
+                    self.source_index -= 1;
                     state = .done;
                 },
 
                 .value => {
                     switch (c) {
                         '\n' => state = .value_newline,
-                        else => try self.buf.append(c),
+                        else => try self.appendBuf(c),
                     }
                 },
 
@@ -377,7 +425,7 @@ pub const FieldParser = struct {
                         ' ', '\t' => state = .value_continuation,
                         '#' => state = .value_continuation_comment,
                         else => {
-                            self.index -= 1; // backtrack
+                            self.source_index -= 1; // backtrack
                             state = .done;
                         },
                     }
@@ -388,8 +436,8 @@ pub const FieldParser = struct {
                         ' ', '\t' => {},
                         else => {
                             // TODO: does spec require a space to be inserted? It seems logical to do so.
-                            try self.buf.append(' ');
-                            try self.buf.append(c);
+                            try self.appendBuf(' ');
+                            try self.appendBuf(c);
                             state = .value;
                         },
                     }
@@ -412,7 +460,7 @@ pub const FieldParser = struct {
                 .done => {
                     return Field{
                         .name = self.source[field_start .. field_end + 1],
-                        .value = self.buf.items,
+                        .value = self.buf[0..self.buf_index],
                     };
                 },
             }
@@ -423,7 +471,7 @@ pub const FieldParser = struct {
             .value, .value_start, .value_start_newline, .value_newline, .value_continuation, .value_continuation_comment, .done => {
                 return Field{
                     .name = self.source[field_start .. field_end + 1],
-                    .value = self.buf.items,
+                    .value = self.buf[0..self.buf_index],
                 };
             },
             .field => return self.invalidDefinition(error_info),
@@ -437,11 +485,26 @@ pub const FieldParser = struct {
     /// heap-allocated temporary buffer) when parsing multiple
     /// stanzas.
     pub fn reset(self: *Self, new_source: []const u8) void {
+        return self.resetPtr(new_source.ptr, new_source.len);
+    }
+
+    /// Reset parser state and initialize with new source string. Use
+    /// this interface to avoid creating a new FieldParser (and its
+    /// heap-allocated temporary buffer) when parsing multiple
+    /// stanzas.
+    pub fn resetPtr(self: *Self, new_source: [*]const u8, new_source_len: usize) void {
         self.source = new_source;
-        self.index = 0;
+        self.source_len = new_source_len;
+        self.source_index = 0;
         self.line_no = 0;
         self.col_no = 0;
-        self.buf.clearRetainingCapacity();
+        self.buf_index = 0;
+    }
+
+    fn appendBuf(self: *Self, c: u8) error{OutOfMemory}!void {
+        if (self.buf_index >= self.buf_len) return error.OutOfMemory;
+        self.buf[self.buf_index] = c;
+        self.buf_index += 1;
     }
 
     fn invalidName(self: Self, error_info: *ErrorInfo) Error {
@@ -465,17 +528,26 @@ pub const FieldParser = struct {
     }
 
     fn safeIndex(self: Self) usize {
-        var index = self.index;
-        if (self.source.len == 0) {
+        var index = self.source_index;
+        if (self.source_len == 0) {
             index = 0;
-        } else if (index >= self.source.len) {
-            index = self.source.len - 1;
+        } else if (index >= self.source_len) {
+            index = self.source_len - 1;
         }
         return index;
     }
 
     const Self = @This();
 };
+
+pub export fn dcf_field_parser_init(
+    source: [*]const u8,
+    source_len: usize,
+    buf: [*]u8,
+    buf_len: usize,
+) FieldParser {
+    return FieldParser.initPtr(source, source_len, buf, buf_len);
+}
 
 fn isFieldStart(c: u8) bool {
     // - field names must not start with U+0023 (#) and U+002D (-).
@@ -533,6 +605,24 @@ test "dcf stanza basic" {
 
     const expect_eof = parser.next(&error_info);
     try testing.expectError(StanzaParser.Error.Eof, expect_eof);
+
+    // C interface
+
+    var c_parser = dcf_stanza_parser_init(in.ptr, in.len);
+    var c_error_info: dcf_stanza_parser_error_info = undefined;
+
+    var out_ptr: [*]const u8 = undefined;
+    var out_len: usize = undefined;
+    const c_s1_res = dcf_stanza_parser_next(&c_parser, &out_ptr, &out_len, &c_error_info);
+    try testing.expectEqual(0, c_s1_res);
+    try testing.expectEqualStrings(in1, out_ptr[0..out_len]);
+
+    const c_s2_res = dcf_stanza_parser_next(&c_parser, &out_ptr, &out_len, &c_error_info);
+    try testing.expectEqual(0, c_s2_res);
+    try testing.expectEqualStrings(in2, out_ptr[0..out_len]);
+
+    const c_expect_eof_res = dcf_stanza_parser_next(&c_parser, &out_ptr, &out_len, &c_error_info);
+    try testing.expectEqual(stanzaParserErrorToCInt(error.Eof), c_expect_eof_res);
 }
 
 test "dcf ignore multiple blank lines" {
@@ -597,7 +687,7 @@ test "dcf stanza invalid field - dash start" {
     var error_info = StanzaParser.ErrorInfo.empty;
     const s1 = parser.next(&error_info);
     try testing.expectError(StanzaParser.Error.InvalidFieldName, s1);
-    try testing.expectEqualStrings("-", error_info.offender);
+    try testing.expectEqualStrings("-", error_info.offender[0..error_info.offender_len]);
     try testing.expectEqual(1, error_info.line);
     try testing.expectEqual(0, error_info.col);
 }
@@ -649,9 +739,10 @@ test "dcf field basic" {
     ;
 
     const allocator = testing.allocator;
+    const buf = try allocator.alloc(u8, 4096);
+    defer allocator.free(buf);
 
-    var parser = try FieldParser.init(allocator, input, .{});
-    defer parser.deinit();
+    var parser = FieldParser.init(input, buf);
     var error_info = FieldParser.ErrorInfo.empty;
 
     // First field
@@ -675,8 +766,9 @@ test "dcf field continuation - simple continue" {
         \\       line 2
     ;
     const allocator = testing.allocator;
-    var parser = try FieldParser.init(allocator, input, .{});
-    defer parser.deinit();
+    const buf = try allocator.alloc(u8, 4096);
+    defer allocator.free(buf);
+    var parser = FieldParser.init(input, buf);
     var error_info = FieldParser.ErrorInfo.empty;
 
     const f1 = try parser.next(&error_info);
@@ -692,8 +784,9 @@ test "dcf field continuation - with comment ignored" {
         \\  line 3
     ;
     const allocator = testing.allocator;
-    var parser = try FieldParser.init(allocator, input, .{});
-    defer parser.deinit();
+    const buf = try allocator.alloc(u8, 4096);
+    defer allocator.free(buf);
+    var parser = FieldParser.init(input, buf);
     var error_info = FieldParser.ErrorInfo.empty;
 
     const f1 = try parser.next(&error_info);
@@ -709,8 +802,9 @@ test "dcf field continuation - indented comment is part of value" {
         \\  line 3
     ;
     const allocator = testing.allocator;
-    var parser = try FieldParser.init(allocator, input, .{});
-    defer parser.deinit();
+    const buf = try allocator.alloc(u8, 4096);
+    defer allocator.free(buf);
+    var parser = FieldParser.init(input, buf);
     var error_info = FieldParser.ErrorInfo.empty;
 
     const f1 = try parser.next(&error_info);
@@ -726,8 +820,9 @@ test "dcf field continuation - unindented line after comment is not part of valu
         \\line 3
     ;
     const allocator = testing.allocator;
-    var parser = try FieldParser.init(allocator, input, .{});
-    defer parser.deinit();
+    const buf = try allocator.alloc(u8, 4096);
+    defer allocator.free(buf);
+    var parser = FieldParser.init(input, buf);
     var error_info = FieldParser.ErrorInfo.empty;
 
     const f1 = try parser.next(&error_info);
@@ -743,8 +838,9 @@ test "dcf field continuation - unindented line after comment begins next field" 
         \\Field2: value2
     ;
     const allocator = testing.allocator;
-    var parser = try FieldParser.init(allocator, input, .{});
-    defer parser.deinit();
+    const buf = try allocator.alloc(u8, 4096);
+    defer allocator.free(buf);
+    var parser = FieldParser.init(input, buf);
     var error_info = FieldParser.ErrorInfo.empty;
 
     const f1 = try parser.next(&error_info);
@@ -764,8 +860,9 @@ test "dcf field continuation - unindented line after continuation begins next fi
         \\Field2: value2
     ;
     const allocator = testing.allocator;
-    var parser = try FieldParser.init(allocator, input, .{});
-    defer parser.deinit();
+    const buf = try allocator.alloc(u8, 4096);
+    defer allocator.free(buf);
+    var parser = FieldParser.init(input, buf);
     var error_info = FieldParser.ErrorInfo.empty;
 
     const f1 = try parser.next(&error_info);
@@ -780,8 +877,9 @@ test "dcf field continuation - unindented line after continuation begins next fi
 test "dcf field invalid - bad name" {
     const input = "-BadName: foo";
     const allocator = testing.allocator;
-    var parser = try FieldParser.init(allocator, input, .{});
-    defer parser.deinit();
+    const buf = try allocator.alloc(u8, 4096);
+    defer allocator.free(buf);
+    var parser = FieldParser.init(input, buf);
     var error_info = FieldParser.ErrorInfo.empty;
 
     try testing.expectError(error.InvalidName, parser.next(&error_info));
@@ -790,8 +888,9 @@ test "dcf field invalid - bad name" {
 test "dcf field invalid - field without value at eof" {
     const input = "Empty foo";
     const allocator = testing.allocator;
-    var parser = try FieldParser.init(allocator, input, .{});
-    defer parser.deinit();
+    const buf = try allocator.alloc(u8, 4096);
+    defer allocator.free(buf);
+    var parser = FieldParser.init(input, buf);
     var error_info = FieldParser.ErrorInfo.empty;
 
     try testing.expectError(error.InvalidDefinition, parser.next(&error_info));
@@ -804,8 +903,9 @@ test "dcf field invalid - field without value in the middle" {
         \\Field3: value3
     ;
     const allocator = testing.allocator;
-    var parser = try FieldParser.init(allocator, input, .{});
-    defer parser.deinit();
+    const buf = try allocator.alloc(u8, 4096);
+    defer allocator.free(buf);
+    var parser = FieldParser.init(input, buf);
     var error_info = FieldParser.ErrorInfo.empty;
 
     const f1 = try parser.next(&error_info);
@@ -822,8 +922,9 @@ test "dcf field invalid - field without value in the middle" {
 test "dcf field whitespace - before colon" {
     const input = "Field    :value1";
     const allocator = testing.allocator;
-    var parser = try FieldParser.init(allocator, input, .{});
-    defer parser.deinit();
+    const buf = try allocator.alloc(u8, 4096);
+    defer allocator.free(buf);
+    var parser = FieldParser.init(input, buf);
     var error_info = FieldParser.ErrorInfo.empty;
 
     const f1 = try parser.next(&error_info);
@@ -834,8 +935,9 @@ test "dcf field whitespace - before colon" {
 test "dcf field whitespace - after colon" {
     const input = "Field    :         value1";
     const allocator = testing.allocator;
-    var parser = try FieldParser.init(allocator, input, .{});
-    defer parser.deinit();
+    const buf = try allocator.alloc(u8, 4096);
+    defer allocator.free(buf);
+    var parser = FieldParser.init(input, buf);
     var error_info = FieldParser.ErrorInfo.empty;
 
     const f1 = try parser.next(&error_info);
@@ -852,8 +954,9 @@ test "dcf field whitespace - before and after first name" {
         \\
     ;
     const allocator = testing.allocator;
-    var parser = try FieldParser.init(allocator, input, .{});
-    defer parser.deinit();
+    const buf = try allocator.alloc(u8, 4096);
+    defer allocator.free(buf);
+    var parser = FieldParser.init(input, buf);
     var error_info = FieldParser.ErrorInfo.empty;
 
     const f1 = try parser.next(&error_info);
@@ -872,8 +975,9 @@ test "dcf stanza fields - base" {
         \\Field2: value 4
     ;
     const allocator = testing.allocator;
-    var parser = try FieldParser.init(allocator, input, .{});
-    defer parser.deinit();
+    const buf = try allocator.alloc(u8, 4096);
+    defer allocator.free(buf);
+    var parser = FieldParser.init(input, buf);
     var error_info = FieldParser.ErrorInfo.empty;
 
     const f1 = try parser.next(&error_info);
@@ -910,8 +1014,9 @@ test "dcf field with no value" {
         \\Imports: bar
     ;
     const allocator = testing.allocator;
-    var parser = try FieldParser.init(allocator, input, .{});
-    defer parser.deinit();
+    const buf = try allocator.alloc(u8, 4096);
+    defer allocator.free(buf);
+    var parser = FieldParser.init(input, buf);
     var error_info = FieldParser.ErrorInfo.empty;
 
     const f1 = try parser.next(&error_info);
@@ -935,8 +1040,9 @@ test "dcf regression - field with newline value" {
         \\Normal: foo
     ;
     const allocator = testing.allocator;
-    var parser = try FieldParser.init(allocator, input, .{});
-    defer parser.deinit();
+    const buf = try allocator.alloc(u8, 4096);
+    defer allocator.free(buf);
+    var parser = FieldParser.init(input, buf);
     var error_info = FieldParser.ErrorInfo.empty;
 
     const f1 = try parser.next(&error_info);
@@ -967,11 +1073,12 @@ test "dcf integration" {
     var ex_idx: usize = 0;
 
     const allocator = testing.allocator;
+    const buf = try allocator.alloc(u8, 4096);
+    defer allocator.free(buf);
 
     var stanzas = StanzaParser.init(in);
     var stanza_error = StanzaParser.ErrorInfo.empty;
-    var fields = try FieldParser.init(allocator, "", .{});
-    defer fields.deinit();
+    var fields = FieldParser.init("", buf);
     var field_error = FieldParser.ErrorInfo.empty;
 
     while (true) {
