@@ -192,10 +192,9 @@ pub const StanzaParser = extern struct {
     }
 
     /// Extended `StanzaParser` error information if `next` returns an error.
-    pub const ErrorInfo = extern struct {
+    pub const ErrorInfo = struct {
         /// Slice into SOURCE provided to init.
-        offender: [*]const u8,
-        offender_len: usize,
+        offender: []const u8,
 
         line: usize,
         col: usize,
@@ -203,14 +202,32 @@ pub const StanzaParser = extern struct {
         /// An undefined ErrorInfo struct, suitable to provide to a
         /// call to `next`.
         pub const empty: @This() = undefined;
+
+        pub fn toC(self: @This()) C {
+            return .{
+                .offender = self.offender.ptr,
+                .offender_len = self.offender.len,
+                .line = self.line,
+                .col = self.col,
+            };
+        }
+
+        pub const C = extern struct {
+            offender: [*]const u8,
+            offender_len: usize,
+
+            line: usize,
+            col: usize,
+        };
+
+        const Self = @This();
     };
 
     pub const Error = error{ Eof, InvalidFieldName };
 
     fn invalidFieldName(self: Self, error_info: *ErrorInfo) Error {
         error_info.* = .{
-            .offender = @ptrCast(&self.source[self.index]),
-            .offender_len = 1,
+            .offender = self.source[self.index .. self.index + 1],
             .line = self.line_no,
             .col = self.col_no,
         };
@@ -220,21 +237,26 @@ pub const StanzaParser = extern struct {
     const Self = @This();
 };
 
+// C: StanzaParser
+
 /// C: initialize a StanzaParser. Lifetime of source must exceed
 /// lifetime of the parser.
 pub export fn dcf_stanza_parser_init(source: [*]const u8, source_len: usize) StanzaParser {
     return StanzaParser.initPtr(source, source_len);
 }
 
-pub const dcf_stanza_parser_error_info = StanzaParser.ErrorInfo;
+pub const dcf_stanza_parser_error_info = StanzaParser.ErrorInfo.C;
 
 pub export fn dcf_stanza_parser_next(
     parser: *StanzaParser,
     out: *[*]const u8,
     out_len: *usize,
-    error_info: *StanzaParser.ErrorInfo,
+    error_info: *StanzaParser.ErrorInfo.C,
 ) c_int {
-    const res = parser.next(error_info) catch |err| {
+    var zig_error_info: StanzaParser.ErrorInfo = undefined;
+
+    const res = parser.next(&zig_error_info) catch |err| {
+        error_info.* = zig_error_info.toC();
         return stanzaParserErrorToCInt(err);
     };
     out.* = res.ptr;
@@ -266,38 +288,6 @@ pub const FieldParser = extern struct {
     source_index: usize,
     line_no: usize,
     col_no: usize,
-
-    /// Optional configuration to supply to `init`.
-    pub const Options = struct {
-        initial_buffer_size: usize = 4096,
-    };
-
-    /// Field information returned by `next`.
-    pub const Field = struct {
-        /// shares lifetime with source
-        name: []const u8,
-        /// only valid until next call to next()
-        value: []const u8,
-    };
-
-    /// Extended `FieldParser` error information if `next` returns an error.
-    pub const ErrorInfo = struct {
-        /// Slice into SOURCE provided to init.
-        offender: []const u8,
-
-        line: usize,
-        col: usize,
-
-        /// An undefined ErrorInfo struct, suitable to provide to a
-        /// call to `next()`.
-        pub const empty: @This() = undefined;
-    };
-
-    pub const Error = error{
-        Eof,
-        InvalidName,
-        InvalidDefinition,
-    };
 
     /// Create a `FieldParser` and its allocated temporary buffer with
     /// the given options. Lifetime of `source` and `buf` must exceed
@@ -501,6 +491,67 @@ pub const FieldParser = extern struct {
         self.buf_index = 0;
     }
 
+    /// Field information returned by `next`.
+    pub const Field = struct {
+        /// shares lifetime with source
+        name: []const u8,
+        /// only valid until next call to next()
+        value: []const u8,
+
+        pub fn toC(self: @This()) C {
+            return .{
+                .name = self.name.ptr,
+                .name_len = self.name.len,
+                .value = self.value.ptr,
+                .value_len = self.value.len,
+            };
+        }
+
+        pub const C = extern struct {
+            name: [*]const u8,
+            name_len: usize,
+            value: [*]const u8,
+            value_len: usize,
+        };
+    };
+
+    /// Extended `FieldParser` error information if `next` returns an error.
+    pub const ErrorInfo = struct {
+        /// Slice into SOURCE provided to init.
+        offender: []const u8,
+
+        line: usize,
+        col: usize,
+
+        /// An undefined ErrorInfo struct, suitable to provide to a
+        /// call to `next()`.
+        pub const empty: @This() = undefined;
+
+        pub fn toC(self: @This()) C {
+            return .{
+                .offender = self.offender.ptr,
+                .offender_len = self.offender.len,
+                .line = self.line,
+                .col = self.col,
+            };
+        }
+
+        pub const C = extern struct {
+            offender: [*]const u8,
+            offender_len: usize,
+            line: usize,
+            col: usize,
+        };
+    };
+
+    pub const Error = error{
+        Eof,
+        InvalidName,
+        InvalidDefinition,
+    };
+
+    //
+
     fn appendBuf(self: *Self, c: u8) error{OutOfMemory}!void {
         if (self.buf_index >= self.buf_len) return error.OutOfMemory;
         self.buf[self.buf_index] = c;
@@ -540,14 +591,7 @@ pub const FieldParser = extern struct {
     const Self = @This();
 };
 
-pub export fn dcf_field_parser_init(
-    source: [*]const u8,
-    source_len: usize,
-    buf: [*]u8,
-    buf_len: usize,
-) FieldParser {
-    return FieldParser.initPtr(source, source_len, buf, buf_len);
-}
+//
 
 fn isFieldStart(c: u8) bool {
     // - field names must not start with U+0023 (#) and U+002D (-).
@@ -570,6 +614,44 @@ fn isWhitespace(c: u8) bool {
     return switch (c) {
         ' ', '\t', '\r', '\n' => true,
         else => false,
+    };
+}
+
+// C: FieldParser
+
+pub export fn dcf_field_parser_init(
+    source: [*]const u8,
+    source_len: usize,
+    buf: [*]u8,
+    buf_len: usize,
+) FieldParser {
+    return FieldParser.initPtr(source, source_len, buf, buf_len);
+}
+
+pub const dcf_field_parser_error_info = FieldParser.ErrorInfo.C;
+pub const dcf_field_parser_field = FieldParser.Field.C;
+
+pub export fn dcf_field_parser_next(
+    parser: *FieldParser,
+    out: *FieldParser.Field.C,
+    error_info: *dcf_field_parser_error_info,
+) c_int {
+    var zig_error_info: FieldParser.ErrorInfo = undefined;
+
+    const res = parser.next(&zig_error_info) catch |err| {
+        error_info.* = zig_error_info.toC();
+        return fieldParserErrorToCInt(err);
+    };
+    out.* = res.toC();
+    return 0;
+}
+
+fn fieldParserErrorToCInt(err: (FieldParser.Error || error{OutOfMemory})) c_int {
+    return switch (err) {
+        error.OutOfMemory => 1,
+        error.Eof => 2,
+        error.InvalidName => 3,
+        error.InvalidDefinition => 4,
     };
 }
 
@@ -687,7 +769,7 @@ test "dcf stanza invalid field - dash start" {
     var error_info = StanzaParser.ErrorInfo.empty;
     const s1 = parser.next(&error_info);
     try testing.expectError(StanzaParser.Error.InvalidFieldName, s1);
-    try testing.expectEqualStrings("-", error_info.offender[0..error_info.offender_len]);
+    try testing.expectEqualStrings("-", error_info.offender);
     try testing.expectEqual(1, error_info.line);
     try testing.expectEqual(0, error_info.col);
 }
@@ -758,6 +840,21 @@ test "dcf field basic" {
     // Should be end of input
     const f3 = parser.next(&error_info);
     try testing.expectError(FieldParser.Error.Eof, f3);
+
+    // C interface
+    var c_parser = dcf_field_parser_init(input.ptr, input.len, buf.ptr, buf.len);
+    var c_error_info: dcf_field_parser_error_info = undefined;
+    var c_f1_field: dcf_field_parser_field = undefined;
+    const c_f1_res = dcf_field_parser_next(&c_parser, &c_f1_field, &c_error_info);
+    try testing.expectEqual(0, c_f1_res);
+    try testing.expectEqualStrings("Stanza", c_f1_field.name[0..c_f1_field.name_len]);
+    try testing.expectEqualStrings("one", c_f1_field.value[0..c_f1_field.value_len]);
+
+    var c_f2_field: dcf_field_parser_field = undefined;
+    const c_f2_res = dcf_field_parser_next(&c_parser, &c_f2_field, &c_error_info);
+    try testing.expectEqual(0, c_f2_res);
+    try testing.expectEqualStrings("Field1", c_f2_field.name[0..c_f2_field.name_len]);
+    try testing.expectEqualStrings("value1", c_f2_field.value[0..c_f2_field.value_len]);
 }
 
 test "dcf field continuation - simple continue" {
