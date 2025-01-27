@@ -14,15 +14,15 @@ pub fn build(b: *std.Build) void {
         .ReleaseFast, .ReleaseSmall => true,
     };
 
-    // zig module, no C API
+    // zig module
 
-    const lib_mod = b.createModule(.{
+    const lib_mod = b.addModule("dcf", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    // static library - C API
+    // static library
 
     const lib = b.addStaticLibrary(.{
         .name = "dcf",
