@@ -38,8 +38,8 @@
 //!    (* Fields *)
 //!    Field = FieldName ":" ValuePart
 //!    FieldName = FieldStartChar FieldChar*
-//!    FieldStartChar = [!-9] | [;~]  (* ASCII 0x21-0x39, 0x3B-0x7E, excluding "#" and "-" *)
-//!    FieldChar = [!-9] | [;~]       (* ASCII 0x21-0x39, 0x3B-0x7E *)
+//!    FieldStartChar = [!-9] | [;-~]  (* ASCII 0x21-0x39, 0x3B-0x7E, excluding "#" and "-" *)
+//!    FieldChar = [!-9] | [;-~]       (* ASCII 0x21-0x39, 0x3B-0x7E *)
 //!
 //!    (* Values *)
 //!    ValuePart = (SimpleValue | MultilineValue)
