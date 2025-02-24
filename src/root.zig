@@ -1,6 +1,51 @@
 //! Debian control file parser.
 //!
-//! Usage: see the test "dcf integration" for example usage.
+//! Usage:
+//!
+//! Allocate a buffer large enough to hold the largest field
+//! data expected in the input file. Create a `StanzaParser` to iterate
+//! through stanzas, and a `FieldParser` to iterate through the fields of
+//! each stanza.
+//!
+//! Example:
+//!
+//! ```zig
+//! const allocator = testing.allocator;
+//! const buf = try allocator.alloc(u8, 4096);
+//! defer allocator.free(buf);
+//!
+//! var stanzas = StanzaParser.init(in);
+//! var stanza_error = StanzaParser.ErrorInfo.empty;
+//! var fields = FieldParser.init("", buf);
+//! var field_error = FieldParser.ErrorInfo.empty;
+//!
+//! while (true) {
+//!     const stanza = stanzas.next(&stanza_error) catch |err| switch (err) {
+//!         error.Eof => break,
+//!         else => |e| {
+//!             std.debug.print("unexpected stanza error: {}", .{e});
+//!         },
+//!     };
+//!
+//!     fields.reset(stanza);
+//!
+//!     while (true) {
+//!         const field = fields.next(&field_error) catch |err| switch (err) {
+//!             error.Eof => break,
+//!             else => |e| {
+//!                 std.debug.print("unexpected field error: {}", .{e});
+//!             },
+//!         };
+//!
+//!         // do something with field
+//!
+//!     }
+//! }
+//! ```
+//!
+//! C API:
+//!
+//! A C API exists: `C`.
 //!
 //! Grammar:
 //!
@@ -19,41 +64,42 @@
 //!   is ignored
 //!
 //! See:
+//!
 //!   https://www.debian.org/doc/debian-policy/ch-controlfields.html
 //!
 //! Formal grammar supported by this parser:
-//!    ```
-//!    (* Top level structure *)
-//!    Document = Stanza*
+//! ```
+//! (* Top level structure *)
+//! Document = Stanza*
 //!
-//!    (* Stanza structure *)
-//!    Stanza = (EmptyLine | Comment)* Field+ BlankLine
-//!    BlankLine = NewLine NewLine
-//!    EmptyLine = NewLine
-//!    NewLine = "\n"
+//! (* Stanza structure *)
+//! Stanza = (EmptyLine | Comment)* Field+ BlankLine
+//! BlankLine = NewLine NewLine
+//! EmptyLine = NewLine
+//! NewLine = "\n"
 //!
-//!    (* Comments *)
-//!    Comment = "#" AnyChar* NewLine
+//! (* Comments *)
+//! Comment = "#" AnyChar* NewLine
 //!
-//!    (* Fields *)
-//!    Field = FieldName ":" ValuePart
-//!    FieldName = FieldStartChar FieldChar*
-//!    FieldStartChar = [!-9] | [;-~]  (* ASCII 0x21-0x39, 0x3B-0x7E, excluding "#" and "-" *)
-//!    FieldChar = [!-9] | [;-~]       (* ASCII 0x21-0x39, 0x3B-0x7E *)
+//! (* Fields *)
+//! Field = FieldName ":" ValuePart
+//! FieldName = FieldStartChar FieldChar*
+//! FieldStartChar = [!-9] | [;-~]  (* ASCII 0x21-0x39, 0x3B-0x7E, excluding "#" and "-" *)
+//! FieldChar = [!-9] | [;-~]       (* ASCII 0x21-0x39, 0x3B-0x7E *)
 //!
-//!    (* Values *)
-//!    ValuePart = (SimpleValue | MultilineValue)
-//!    SimpleValue = WhiteSpace* Value? NewLine
-//!    MultilineValue = WhiteSpace* Value? NewLine (ValueContinuation | CommentContinuation)*
-//!    ValueContinuation = WhiteSpace+ Value NewLine
-//!    CommentContinuation = "#" AnyChar* NewLine ValueContinuation
+//! (* Values *)
+//! ValuePart = (SimpleValue | MultilineValue)
+//! SimpleValue = WhiteSpace* Value? NewLine
+//! MultilineValue = WhiteSpace* Value? NewLine (ValueContinuation | CommentContinuation)*
+//! ValueContinuation = WhiteSpace+ Value NewLine
+//! CommentContinuation = "#" AnyChar* NewLine ValueContinuation
 //!
-//!    (* Basic elements *)
-//!    Value = NonNewline+
-//!    WhiteSpace = " " | "\t"
-//!    NonNewline = <any character except newline>
-//!    AnyChar = <any character>
-//!    ```
+//! (* Basic elements *)
+//! Value = NonNewline+
+//! WhiteSpace = " " | "\t"
+//! NonNewline = <any character except newline>
+//! AnyChar = <any character>
+//! ```
 //!
 
 /// `StanzaParser` splits input string into complete stanzas, with

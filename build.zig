@@ -22,7 +22,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // static library
+    // C static library
 
     const lib = b.addStaticLibrary(.{
         .name = "dcf",
