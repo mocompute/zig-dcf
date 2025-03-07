@@ -1,6 +1,7 @@
 .{
-    .name = "dcf",
-    .version = "0.2.1",
+    .name = .dcf,
+    .fingerprint = 0x5a9e46e777867629,
+    .version = "0.3.0",
 
     .paths = .{
         "build.zig",
