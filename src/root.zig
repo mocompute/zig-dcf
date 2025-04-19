@@ -79,7 +79,7 @@
 //! NewLine = "\n"
 //!
 //! (* Comments *)
-//! Comment = "#" AnyChar* NewLine
+//! Comment = "#" NonNewline* NewLine
 //!
 //! (* Fields *)
 //! Field = FieldName ":" ValuePart
